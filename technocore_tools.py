@@ -1315,8 +1315,13 @@ def command_quiz_auto(args: argparse.Namespace, palette: Palette) -> int:
     answered: set[str] = set()
 
     while True:
-        page = read_room(args.base_url, room, limit=MAX_ROOM_LIMIT,
-                         since=cursor, wait=int(args.wait), timeout=args.timeout)
+        try:
+            page = read_room(args.base_url, room, limit=MAX_ROOM_LIMIT,
+                             since=cursor, wait=int(args.wait), timeout=args.timeout)
+        except ToolError as error:
+            print(f"read failed, retrying in 5s: {error}", file=sys.stderr, flush=True)
+            time.sleep(5.0)
+            continue
         fresh = room_messages(page)
         if not fresh:
             if int(args.wait) == 0:
