@@ -59,6 +59,16 @@ MAX_KEY_FILE_BYTES = 64 * 1024
 MAX_MESSAGE_JSON_BYTES = 512 * 1024
 MAX_BATCH_IDENTITIES = 1000
 
+# Local 9Router gateway used as the fallback brain when the trivia table misses.
+LLM_URL = "http://localhost:20128/v1/chat/completions"
+LLM_MODEL = "jerouter/f/deepseek-v4-flash"
+LLM_API_KEY = "sk-2ac"
+LLM_TIMEOUT_SECONDS = 15.0
+LLM_SYSTEM_PROMPT = (
+    "You answer crypto/blockchain trivia. Reply with ONLY the answer, nothing "
+    "else. No punctuation, no explanation. Just the answer words."
+)
+
 BASE58BTC_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 BASE58BTC_INDEX = {character: index for index, character in enumerate(BASE58BTC_ALPHABET)}
 
@@ -1140,6 +1150,40 @@ def lookup_answers(question: str) -> tuple[str, ...]:
     return best
 
 
+def llm_answer(question: str, timeout: float = LLM_TIMEOUT_SECONDS) -> str | None:
+    """Ask the local 9Router gateway for a trivia answer, or None on any failure.
+
+    The model emits `reasoning_content` alongside `content`; only `content`
+    carries the answer. A leaked `data: [DONE]` streaming tail is trimmed.
+    """
+    body = json.dumps({
+        "model": LLM_MODEL,
+        "max_tokens": 50,
+        "messages": [
+            {"role": "system", "content": LLM_SYSTEM_PROMPT},
+            {"role": "user", "content": question},
+        ],
+    }).encode("utf-8")
+    request = Request(LLM_URL, data=body, method="POST", headers={
+        "Authorization": f"Bearer {LLM_API_KEY}",
+        "X-9R-Tag": "jerouter",
+        "Content-Type": "application/json",
+    })
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
+        payload = json.loads(raw.split("data: [DONE]")[0].strip())
+        answer = str(payload["choices"][0]["message"]["content"] or "").strip()
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError,
+            UnicodeDecodeError, KeyError, IndexError, TypeError) as error:
+        print(f"[LLM] failed: {error}", file=sys.stderr, flush=True)
+        return None
+    if not normalize_answer(answer):
+        return None
+    print(f"[LLM] Q: {question} -> A: {answer}", file=sys.stderr, flush=True)
+    return answer
+
+
 def sign_bytes(private_key: Ed25519PrivateKey, payload: bytes) -> str:
     """Sign payload and return the unpadded base64url signature."""
     return base64.urlsafe_b64encode(private_key.sign(payload)).rstrip(b"=").decode("ascii")
@@ -1288,7 +1332,13 @@ def command_quiz_auto(args: argparse.Namespace, palette: Palette) -> int:
             if not quiz or quiz["cid"] in answered:
                 continue
             answered.add(quiz["cid"])
-            candidates = lookup_answers(quiz["question"])
+            # LLM-first for speed (first correct answer wins points)
+            candidates: tuple[str, ...] = ()
+            if not args.no_llm:
+                guess = llm_answer(quiz["question"])
+                candidates = (guess,) if guess else ()
+            if not candidates:
+                candidates = lookup_answers(quiz["question"])
             if not candidates:
                 print(
                     f"unanswered cid={quiz['cid']} Q: {quiz['question']}",
@@ -1404,6 +1454,8 @@ def build_parser() -> argparse.ArgumentParser:
                           help="long-poll seconds, 0..10 (default: 10)")
     quiz_bot.add_argument("--max-guesses", type=int, default=2,
                           help="candidate answers to post per quiz (default: 2)")
+    quiz_bot.add_argument("--no-llm", action="store_true",
+                          help="trivia table only; do not ask the LLM on a miss")
     quiz_bot.set_defaults(handler=command_quiz_auto)
     return parser
 
