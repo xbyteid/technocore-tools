@@ -942,6 +942,370 @@ def command_monitor(args: argparse.Namespace, palette: Palette) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Quiz channel ($FLOPPY trivia bot)
+# --------------------------------------------------------------------------- #
+
+QUIZ_ROOM = "ca-cxxphyiwazuwwxd9agjca3l6gjjj4wmxogyyjczkpump"
+QUIZ_PATTERN = re.compile(r"QUIZ\s+(\S+)\s+([0-9a-f]{4,64})\b", re.IGNORECASE)
+QUIZ_QUESTION_PATTERN = re.compile(r"Q:\s*(.+?)(?:\s*\|\||$)", re.DOTALL)
+QUIZ_RESULT_PATTERN = re.compile(r"RESULT\s+(\S+)", re.IGNORECASE)
+
+
+# (required keywords, candidate answers). Longest keyword match wins; the
+# candidates are tried in order, so put the likeliest answer first.
+CRYPTO_TRIVIA: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("nft", "stand for"), ("nonfungibletoken",)),
+    (("defi", "stand for"), ("decentralizedfinance",)),
+    (("dao", "stand for"), ("decentralizedautonomousorganization",)),
+    (("amm", "stand for"), ("automatedmarketmaker",)),
+    (("tvl", "stand for"), ("totalvaluelocked",)),
+    (("mev", "stand for"), ("maximalextractablevalue", "minerextractablevalue")),
+    (("ipfs", "stand for"), ("interplanetaryfilesystem",)),
+    (("evm", "stand for"), ("ethereumvirtualmachine",)),
+    (("dex", "stand for"), ("decentralizedexchange",)),
+    (("cex", "stand for"), ("centralizedexchange",)),
+    (("ico", "stand for"), ("initialcoinoffering",)),
+    (("kyc", "stand for"), ("knowyourcustomer",)),
+    (("pow", "stand for"), ("proofofwork",)),
+    (("pos", "stand for"), ("proofofstake",)),
+    (("poh", "stand for"), ("proofofhistory",)),
+    (("zk", "stand for"), ("zeroknowledge",)),
+    (("zkp", "stand for"), ("zeroknowledgeproof",)),
+    (("spl", "stand for"), ("solanaprogramlibrary",)),
+    (("bip", "stand for"), ("bitcoinimprovementproposal",)),
+    (("eip", "stand for"), ("ethereumimprovementproposal",)),
+    (("erc", "stand for"), ("ethereumrequestforcomment",)),
+    (("apy", "stand for"), ("annualpercentageyield",)),
+    (("lp", "stand for"), ("liquidityprovider",)),
+    (("wagmi", "stand for"), ("wearegonnamakeit",)),
+    (("hodl",), ("holdonfordearlife",)),
+    (("proof", "history"), ("proofofhistory",)),
+    (("merge",), ("themerge",)),
+    (("proof", "stake", "move"), ("themerge",)),
+    (("proof", "stake", "upgrade"), ("themerge",)),
+    (("consensus", "bitcoin"), ("proofofwork",)),
+    (("consensus", "ethereum"), ("proofofstake",)),
+    (("consensus", "merge"), ("proofofstake",)),
+    (("tokyo", "exchange"), ("mtgox",)),
+    (("exchange", "2014", "hack"), ("mtgox",)),
+    (("stablecoin", "collapsed"), ("ust", "terrausd")),
+    (("terra", "collapse"), ("ust", "terrausd")),
+    (("largest", "hack"), ("roninbridge",)),
+    (("bridge", "hack", "axie"), ("roninbridge",)),
+    (("dao", "hack", "2016"), ("thedao",)),
+    (("ftx", "founder"), ("sambankmanfried",)),
+    (("binance", "founder"), ("changpengzhao", "cz")),
+    (("slot", "time", "solana"), ("400ms", "400milliseconds")),
+    (("target", "slot", "time"), ("400ms", "400milliseconds")),
+    (("hex", "characters", "ethereum", "address"), ("40",)),
+    (("length", "ethereum", "address"), ("40", "42")),
+    (("erc", "nft"), ("erc721",)),
+    (("erc", "multi"), ("erc1155",)),
+    (("erc", "fungible"), ("erc20",)),
+    (("token", "standard", "fungible"), ("erc20",)),
+    (("satoshi", "created"), ("satoshinakamoto",)),
+    (("who", "invented", "bitcoin"), ("satoshinakamoto",)),
+    (("who", "created", "bitcoin"), ("satoshinakamoto",)),
+    (("bitcoin", "maximum", "supply"), ("21000000",)),
+    (("bitcoin", "total", "supply"), ("21000000",)),
+    (("bitcoin", "smallest", "unit"), ("satoshi",)),
+    (("satoshis", "bitcoin"), ("100000000",)),
+    (("ethereum", "founder"), ("vitalikbuterin",)),
+    (("who", "created", "ethereum"), ("vitalikbuterin",)),
+    (("whitepaper", "bitcoin", "year"), ("2008",)),
+    (("bitcoin", "whitepaper"), ("2008",)),
+    (("genesis", "block"), ("genesisblock",)),
+    (("first", "block", "chain"), ("genesisblock",)),
+    (("gas", "denomination"), ("gwei",)),
+    (("gas", "unit"), ("gwei",)),
+    (("wei", "ether"), ("1000000000000000000",)),
+    (("halving", "blocks"), ("210000",)),
+    (("halving", "interval"), ("210000",)),
+    (("halving", "years"), ("4",)),
+    (("uniswap", "version"), ("v4", "v3")),
+    (("layer", "2", "first"), ("optimism", "arbitrum")),
+    (("rollup", "optimistic"), ("optimism", "arbitrum")),
+    (("bitcoin", "block", "time"), ("10minutes",)),
+    (("ethereum", "block", "time"), ("12seconds",)),
+    (("bitcoin", "script", "language"), ("script",)),
+    (("ethereum", "programming", "language"), ("solidity",)),
+    (("smart", "contract", "language", "ethereum"), ("solidity",)),
+    (("solana", "programming", "language"), ("rust",)),
+    (("chainlink", "provides"), ("oracle",)),
+    (("oracle", "network"), ("chainlink",)),
+    (("wrapped", "bitcoin"), ("wbtc",)),
+    (("vitalik", "age"), ("19",)),
+    (("pizza", "year"), ("2010",)),
+    (("pizza", "how", "many"), ("10000",)),
+    (("flash", "loan"), ("uncollateralizedloan",)),
+    (("impermanent", "loss"), ("impermanentloss",)),
+    (("rug", "pull"), ("rugpull",)),
+    (("seed", "phrase", "words"), ("12", "24")),
+    (("nakamoto", "coefficient"), ("nakamotocoefficient",)),
+    (("bitcoin", "hash", "function"), ("sha256",)),
+    (("ethereum", "hash", "function"), ("keccak256",)),
+    (("signature", "scheme", "bitcoin"), ("ecdsa",)),
+    (("curve", "bitcoin"), ("secp256k1",)),
+    (("curve", "solana"), ("ed25519",)),
+    (("solana", "signature", "scheme"), ("ed25519",)),
+    (("solana", "founder"), ("anatolyyakovenko",)),
+    (("solana", "consensus"), ("proofofhistory", "proofofstake")),
+    (("solana", "token", "program"), ("splltoken", "spltoken")),
+    (("solana", "cluster"), ("mainnetbeta",)),
+    (("cardano", "founder"), ("charleshoskinson",)),
+    (("ripple", "token"), ("xrp",)),
+    (("dogecoin", "founder"), ("billymarkus", "jacksonpalmer")),
+    (("largest", "stablecoin"), ("usdt", "tether")),
+    (("tether", "symbol"), ("usdt",)),
+    (("circle", "stablecoin"), ("usdc",)),
+    (("makerdao", "stablecoin"), ("dai",)),
+    (("bitcoin", "eip", "segwit"), ("bip141",)),
+    (("segwit", "year"), ("2017",)),
+    (("taproot", "year"), ("2021",)),
+    (("eip", "1559"), ("basefee",)),
+    (("burn", "mechanism", "ethereum"), ("eip1559",)),
+    (("ethereum", "launch", "year"), ("2015",)),
+    (("bitcoin", "launch", "year"), ("2009",)),
+    (("solana", "launch", "year"), ("2020",)),
+    (("lightning", "network"), ("layer2", "paymentchannel")),
+    (("ordinals",), ("inscriptions",)),
+    (("account", "abstraction"), ("erc4337",)),
+    (("cold", "wallet"), ("coldwallet", "hardwarewallet")),
+    (("private", "key", "bits", "ed25519"), ("256",)),
+    (("merkle",), ("merkletree",)),
+    (("51", "attack"), ("fiftyonepercentattack", "majorityattack")),
+    (("sandwich", "attack"), ("sandwichattack",)),
+    (("front", "running"), ("frontrunning",)),
+    (("staking", "ethereum", "how", "many", "eth"), ("32",)),
+    (("validator", "ethereum", "eth"), ("32",)),
+    (("gwei", "wei"), ("1000000000",)),
+    (("did", "method", "technocore"), ("didkey",)),
+)
+
+
+def normalize_answer(text: str) -> str:
+    """Lowercase and drop every character that is not a letter or a digit."""
+    return re.sub(r"[^a-z0-9]", "", str(text).lower())
+
+
+def answer_digest(answer: str, cid: str, did: str) -> str:
+    """sha256 of `<normalized answer>:<cid>:<full did>` as lowercase hex."""
+    material = normalize_answer(answer) + ":" + cid + ":" + did
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def answer_line(cid: str, digest: str) -> str:
+    """Build the `f1 ch.answer ...` command the quiz bot parses."""
+    return f"f1 ch.answer {os.urandom(4).hex()} - cid={cid} a={digest}"
+
+
+def parse_quiz(text: str) -> dict[str, str] | None:
+    """Return {quiz_id, cid, question} for a quiz announcement, else None."""
+    match = QUIZ_PATTERN.search(text)
+    if not match:
+        return None
+    question = QUIZ_QUESTION_PATTERN.search(text)
+    return {
+        "quiz_id": match.group(1),
+        "cid": match.group(2).lower(),
+        "question": (question.group(1).strip() if question else ""),
+    }
+
+
+def keyword_pattern(keyword: str) -> re.Pattern[str]:
+    """Compile one trivia keyword into a suffix-tolerant phrase matcher.
+
+    Each word may grow a suffix, so "stand for" hits "stands for" and "move"
+    hits "moved", while "standard is used for" cannot satisfy "stand for".
+    """
+    words = [re.escape(word) for word in keyword.split()]
+    return re.compile(r"\b" + r"\w*\s+".join(words))
+
+
+# Compiled once: the auto-answer loop matches every entry against every quiz.
+TRIVIA_MATCHERS: tuple[tuple[tuple[re.Pattern[str], ...], tuple[str, ...]], ...] = tuple(
+    (tuple(keyword_pattern(keyword) for keyword in keywords), answers)
+    for keywords, answers in CRYPTO_TRIVIA
+)
+
+
+def lookup_answers(question: str) -> tuple[str, ...]:
+    """Best trivia match for a question: the entry with the most hit keywords."""
+    haystack = " " + re.sub(r"[^a-z0-9]+", " ", question.lower()).strip() + " "
+    best_score = 0
+    best: tuple[str, ...] = ()
+    for matchers, answers in TRIVIA_MATCHERS:
+        if len(matchers) > best_score and all(m.search(haystack) for m in matchers):
+            best_score, best = len(matchers), answers
+    return best
+
+
+def sign_bytes(private_key: Ed25519PrivateKey, payload: bytes) -> str:
+    """Sign payload and return the unpadded base64url signature."""
+    return base64.urlsafe_b64encode(private_key.sign(payload)).rstrip(b"=").decode("ascii")
+
+
+def post_signed_message(
+    private_key: Ed25519PrivateKey,
+    base_url: str,
+    room: str,
+    text: str,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Sign and POST one message to a room, returning the server's JSON reply."""
+    nonce = str(int(time.time() * 1000))
+    normalized, payload = message_payload(room, nonce, text)
+    body = json.dumps(
+        {
+            "did": did_from_private_key(private_key),
+            "sig": sign_bytes(private_key, payload),
+            "nonce": nonce,
+            "text": normalized,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    url = f"{base_url.rstrip('/')}/r/{quote(validate_name(room), safe='')}?format=json"
+    request = Request(url, data=body, method="POST", headers={
+        "Accept": "application/json",
+        "Content-Type": "application/json; charset=utf-8",
+        "User-Agent": f"{APP_NAME}/{APP_VERSION}",
+    })
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+    except HTTPError as error:
+        detail = safe_text(error.read(4096).decode("utf-8", "replace"))
+        raise ToolError(f"POST {url} failed with HTTP {error.code}: {detail}") from error
+    except (URLError, TimeoutError, OSError) as error:
+        raise ToolError(f"POST {url} failed: {error}") from error
+    try:
+        reply = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ToolError(f"POST {url} returned invalid JSON") from error
+    return reply if isinstance(reply, dict) else {"ok": True}
+
+
+def submit_answer(
+    private_key: Ed25519PrivateKey,
+    args: argparse.Namespace,
+    room: str,
+    cid: str,
+    answer: str,
+    palette: Palette,
+) -> None:
+    """Compute the digest for one candidate answer and post it, signed."""
+    did = did_from_private_key(private_key)
+    digest = answer_digest(answer, cid, did)
+    text = answer_line(cid, digest)
+    post_signed_message(private_key, args.base_url, room, text, timeout=args.timeout)
+    print(
+        f"{palette('sent', 'green', 'bold')} cid={cid} "
+        f"answer={normalize_answer(answer)} a={digest[:16]}...",
+        flush=True,
+    )
+
+
+def command_quiz_monitor(args: argparse.Namespace, palette: Palette) -> int:
+    """Long-poll the quiz room and print quizzes and results as they land."""
+    room = validate_name(args.room)
+    backlog = read_room(args.base_url, room, limit=int(args.backlog), timeout=args.timeout)
+    messages = room_messages(backlog)
+    cursor = int(backlog.get("last_seq") or (messages[-1].get("seq", 0) if messages else 0))
+    print(palette(f"watching /r/{room} for quizzes (ctrl-c to stop)", "bold", "cyan"))
+
+    def show(message: dict[str, Any]) -> None:
+        text = safe_text(message.get("text", ""))
+        quiz = parse_quiz(text)
+        if quiz:
+            print(palette(f"QUIZ {quiz['quiz_id']} cid={quiz['cid']}", "yellow", "bold"))
+            print(f"  Q: {quiz['question']}")
+            guesses = lookup_answers(quiz["question"])
+            hint = ", ".join(guesses) if guesses else palette("no trivia match", "red")
+            print(f"  candidates: {hint}", flush=True)
+        elif QUIZ_RESULT_PATTERN.search(text):
+            print(palette(f"RESULT {text}", "magenta"), flush=True)
+
+    for message in messages:
+        show(message)
+    while True:
+        page = read_room(args.base_url, room, limit=MAX_ROOM_LIMIT,
+                         since=cursor, wait=int(args.wait), timeout=args.timeout)
+        fresh = room_messages(page)
+        for message in fresh:
+            show(message)
+        if fresh:
+            cursor = int(page.get("last_seq") or fresh[-1].get("seq", cursor))
+        elif int(args.wait) == 0:
+            time.sleep(2.0)
+
+
+def command_quiz_answer(args: argparse.Namespace, palette: Palette) -> int:
+    """Compute the digest for a known answer and post it as a signed write."""
+    room = validate_name(args.room)
+    private_key = load_private_key(Path(args.key))
+    if args.dry_run:
+        did = did_from_private_key(private_key)
+        digest = answer_digest(args.answer, args.cid, did)
+        print(json.dumps({
+            "did": did,
+            "cid": args.cid,
+            "normalized": normalize_answer(args.answer),
+            "digest": digest,
+            "text": answer_line(args.cid, digest),
+        }, indent=2))
+        return 0
+    submit_answer(private_key, args, room, args.cid, args.answer, palette)
+    return 0
+
+
+def command_quiz_auto(args: argparse.Namespace, palette: Palette) -> int:
+    """Watch the quiz room and answer every quiz the trivia table knows."""
+    room = validate_name(args.room)
+    private_key = load_private_key(Path(args.key))
+    did = did_from_private_key(private_key)
+    print(palette(f"auto-answering /r/{room} as {short_did(did)}", "bold", "cyan"))
+
+    page = read_room(args.base_url, room, limit=1, timeout=args.timeout)
+    cursor = int(page.get("last_seq") or 0)
+    answered: set[str] = set()
+
+    while True:
+        page = read_room(args.base_url, room, limit=MAX_ROOM_LIMIT,
+                         since=cursor, wait=int(args.wait), timeout=args.timeout)
+        fresh = room_messages(page)
+        if not fresh:
+            if int(args.wait) == 0:
+                time.sleep(2.0)
+            continue
+        cursor = int(page.get("last_seq") or fresh[-1].get("seq", cursor))
+        for message in fresh:
+            text = safe_text(message.get("text", ""))
+            if QUIZ_RESULT_PATTERN.search(text) and "ANSWER" in text:
+                print(palette(text, "magenta"), flush=True)
+                continue
+            quiz = parse_quiz(text)
+            if not quiz or quiz["cid"] in answered:
+                continue
+            answered.add(quiz["cid"])
+            candidates = lookup_answers(quiz["question"])
+            if not candidates:
+                print(
+                    f"unanswered cid={quiz['cid']} Q: {quiz['question']}",
+                    file=sys.stderr, flush=True,
+                )
+                continue
+            # Only one guess counts for points, but a wrong first guess costs
+            # nothing, so post every candidate in confidence order.
+            for candidate in candidates[:int(args.max_guesses)]:
+                try:
+                    submit_answer(private_key, args, room, quiz["cid"], candidate, palette)
+                except ToolError as error:
+                    print(f"post failed: {error}", file=sys.stderr, flush=True)
+                    break
+
+
+# --------------------------------------------------------------------------- #
 # CLI wiring
 # --------------------------------------------------------------------------- #
 
@@ -1008,6 +1372,39 @@ def build_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--max-messages", type=int, default=0,
                          help="exit after printing this many messages (0 = never)")
     monitor.set_defaults(handler=command_monitor)
+
+    quiz = subparsers.add_parser("quiz", help="watch and answer $FLOPPY room quizzes")
+    quiz_modes = quiz.add_subparsers(dest="quiz_command", required=True)
+
+    def add_room(target: argparse.ArgumentParser) -> None:
+        target.add_argument("--room", default=QUIZ_ROOM,
+                            help=f"quiz room name (default: {QUIZ_ROOM})")
+
+    quiz_watch = quiz_modes.add_parser("monitor", help="print quizzes as they appear")
+    add_room(quiz_watch)
+    quiz_watch.add_argument("--backlog", type=int, default=30,
+                            help="messages to scan before following (default: 30)")
+    quiz_watch.add_argument("--wait", type=int, default=10,
+                            help="long-poll seconds, 0..10 (default: 10)")
+    quiz_watch.set_defaults(handler=command_quiz_monitor)
+
+    quiz_reply = quiz_modes.add_parser("answer", help="submit one answer as a signed write")
+    add_room(quiz_reply)
+    quiz_reply.add_argument("--key", required=True, help="path to the signing PEM key")
+    quiz_reply.add_argument("cid", help="quiz cid from the announcement")
+    quiz_reply.add_argument("answer", help="answer text; normalized before hashing")
+    quiz_reply.add_argument("--dry-run", action="store_true",
+                            help="print the digest and message without posting")
+    quiz_reply.set_defaults(handler=command_quiz_answer)
+
+    quiz_bot = quiz_modes.add_parser("auto", help="monitor and auto-answer from the trivia table")
+    add_room(quiz_bot)
+    quiz_bot.add_argument("--key", required=True, help="path to the signing PEM key")
+    quiz_bot.add_argument("--wait", type=int, default=10,
+                          help="long-poll seconds, 0..10 (default: 10)")
+    quiz_bot.add_argument("--max-guesses", type=int, default=2,
+                          help="candidate answers to post per quiz (default: 2)")
+    quiz_bot.set_defaults(handler=command_quiz_auto)
     return parser
 
 
