@@ -124,11 +124,28 @@ def check_cli(record: dict[str, str]) -> None:
         assert result.returncode == 2 and "already exists" in result.stderr
 
 
+def check_quiz_board() -> None:
+    # KV notes escape line breaks as literal backslash-n; rows must still parse
+    # and rank by points regardless of the order they arrive in.
+    raw = (
+        "flop quiz board\\npoints 10 5 3\\n"
+        "did:key:z6MkpJmwjiFyEW9Z5149x6nW2MHS17jYMiRpFoV7nvmhdaQ1    10 pts    1 firsts    1 rounds\\n"
+        "did:key:z6MkonSW3879Eun51qMR3YGGKyWasaxiTghbuEXZ9dZUhYmN    95 pts    9 firsts   10 rounds"
+    )
+    rows = tt.parse_quiz_board(raw)
+    assert [row["points"] for row in rows] == [95, 10], rows
+    assert rows[0]["did"].endswith("dZUhYmN") and rows[0]["rounds"] == 10, rows
+    assert rows[1]["firsts"] == 1, rows
+    # A malformed line is ignored, not fatal.
+    assert tt.parse_quiz_board("no rows here\\ngarbage 12 pts") == []
+
+
 def main() -> int:
     check_base58_roundtrip()
     key = check_did_roundtrip()
     record = check_payload_and_signature(key)
     check_analytics()
+    check_quiz_board()
     check_cli(record)
     print("selfcheck: all checks passed")
     return 0

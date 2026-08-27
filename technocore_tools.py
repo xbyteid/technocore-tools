@@ -44,7 +44,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 APP_NAME = "technocore-tools"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 DEFAULT_BASE_URL = "https://technocore.chat"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 
@@ -387,6 +387,30 @@ def http_get_json(
     if not isinstance(payload, dict):
         raise ToolError(f"response from {url} is not a JSON object")
     return payload
+
+
+def http_get_text(
+    base_url: str,
+    path: str,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> str:
+    """GET a plain-text document (KV notes are text, not JSON)."""
+    url = base_url.rstrip("/") + path
+    request = Request(url, method="GET", headers={
+        "Accept": "text/plain",
+        "User-Agent": f"{APP_NAME}/{APP_VERSION}",
+    })
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read(MAX_RESPONSE_BYTES + 1)
+    except HTTPError as error:
+        detail = safe_text(error.read(4096).decode("utf-8", "replace"))
+        raise ToolError(f"GET {url} failed with HTTP {error.code}: {detail}") from error
+    except (URLError, TimeoutError, OSError) as error:
+        raise ToolError(f"GET {url} failed: {error}") from error
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise ToolError(f"response from {url} exceeds {MAX_RESPONSE_BYTES} bytes")
+    return body.decode("utf-8", "replace")
 
 
 def read_room(
@@ -956,6 +980,11 @@ def command_monitor(args: argparse.Namespace, palette: Palette) -> int:
 # --------------------------------------------------------------------------- #
 
 QUIZ_ROOM = "ca-cxxphyiwazuwwxd9agjca3l6gjjj4wmxogyyjczkpump"
+QUIZ_BOARD_PATH = "/kv/flop-quiz/board"
+# `did:key:<multibase>  <pts> pts  <n> firsts  <n> rounds`, one row per line.
+QUIZ_BOARD_ROW = re.compile(
+    r"(did:key:[1-9A-HJ-NP-Za-km-z]+)\s+(\d+)\s+pts\s+(\d+)\s+firsts\s+(\d+)\s+rounds"
+)
 QUIZ_PATTERN = re.compile(r"QUIZ\s+(\S+)\s+([0-9a-f]{4,64})\b", re.IGNORECASE)
 QUIZ_QUESTION_PATTERN = re.compile(r"Q:\s*(.+?)(?:\s*\|\||$)", re.DOTALL)
 QUIZ_RESULT_PATTERN = re.compile(r"RESULT\s+(\S+)", re.IGNORECASE)
@@ -1303,6 +1332,65 @@ def command_quiz_answer(args: argparse.Namespace, palette: Palette) -> int:
     return 0
 
 
+def parse_quiz_board(raw: str) -> list[dict[str, int | str]]:
+    """Parse the flop-quiz scoreboard note into ranked rows.
+
+    The KV note escapes its line breaks as literal `\\n`, so split on both the
+    escaped form and real newlines before matching each row.
+    """
+    rows: list[dict[str, int | str]] = []
+    for line in re.split(r"\\n|\n", raw):
+        match = QUIZ_BOARD_ROW.search(line)
+        if match:
+            rows.append({
+                "did": match.group(1),
+                "points": int(match.group(2)),
+                "firsts": int(match.group(3)),
+                "rounds": int(match.group(4)),
+            })
+    rows.sort(key=lambda row: row["points"], reverse=True)
+    return rows
+
+
+def command_quiz_board(args: argparse.Namespace, palette: Palette) -> int:
+    """Fetch the $FLOPPY quiz scoreboard and rank it, flagging our DID."""
+    raw = http_get_text(args.base_url, QUIZ_BOARD_PATH, timeout=args.timeout)
+    rows = parse_quiz_board(raw)
+    if not rows:
+        raise ToolError("scoreboard is empty or its format changed")
+
+    mine: str | None = None
+    if args.key:
+        mine = did_from_private_key(load_private_key(Path(args.key)))
+    elif args.did:
+        mine = args.did
+
+    if args.json:
+        report: dict[str, Any] = {"board": rows}
+        if mine:
+            for rank, row in enumerate(rows, start=1):
+                if row["did"] == mine:
+                    report["me"] = {"rank": rank, "of": len(rows), **row}
+                    break
+        print(json.dumps(report, indent=2))
+        return 0
+
+    print(palette("flop quiz board  (10/5/3 pts to the fastest three per round)",
+                  "bold", "cyan"))
+    for rank, row in enumerate(rows, start=1):
+        is_me = row["did"] == mine
+        label = short_did(str(row["did"]))
+        line = (f"  #{rank:<2} {label}  "
+                f"{row['points']:>4} pts  {row['firsts']:>2} firsts  "
+                f"{row['rounds']:>2} rounds")
+        if is_me:
+            line = palette(line + "  <- you", "green", "bold")
+        print(line)
+    if mine and not any(row["did"] == mine for row in rows):
+        print(palette(f"  {short_did(mine)} not on the board yet", "yellow"))
+    return 0
+
+
 def command_quiz_auto(args: argparse.Namespace, palette: Palette) -> int:
     """Watch the quiz room and answer every quiz the trivia table knows."""
     room = validate_name(args.room)
@@ -1462,6 +1550,12 @@ def build_parser() -> argparse.ArgumentParser:
     quiz_bot.add_argument("--no-llm", action="store_true",
                           help="trivia table only; do not ask the LLM on a miss")
     quiz_bot.set_defaults(handler=command_quiz_auto)
+
+    quiz_score = quiz_modes.add_parser("board", help="show the quiz scoreboard and our rank")
+    quiz_score.add_argument("--key", help="signing PEM key; highlights that DID on the board")
+    quiz_score.add_argument("--did", help="highlight this DID instead of deriving one from --key")
+    quiz_score.add_argument("--json", action="store_true", help="emit the ranked board as JSON")
+    quiz_score.set_defaults(handler=command_quiz_board)
     return parser
 
 
