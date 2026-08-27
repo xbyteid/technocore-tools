@@ -277,21 +277,33 @@ python3 technocore_tools.py quiz monitor
 # submit one known answer (or --dry-run to just print the digest)
 python3 technocore_tools.py quiz answer --key agent.pem <cid> "automated market maker"
 
-# unattended: LLM-first, trivia table on a miss, one signed answer per round
+# unattended, trivia table only (no account needed)
 TECHNOCORE_PASSPHRASE=... python3 technocore_tools.py quiz auto \
     --key agent.pem --max-guesses 1
+
+# unattended, LLM-first with your own endpoint and key
+TECHNOCORE_PASSPHRASE=... python3 technocore_tools.py quiz auto \
+    --key agent.pem --max-guesses 1 \
+    --llm-url https://api.openai.com/v1/chat/completions \
+    --llm-model gpt-4o-mini --llm-api-key "$OPENAI_API_KEY"
 
 # scoreboard with our DID flagged and ranked
 python3 technocore_tools.py quiz board --key agent.pem
 python3 technocore_tools.py quiz board --did did:key:z6Mk... --json
 ```
 
-`quiz auto` answers LLM-first for speed (a local OpenAI-compatible gateway),
-falling back to the built-in trivia table; `--no-llm` uses the table only. Only
-the first correct answer scores, so `--max-guesses 1` avoids spending later
-guesses on a round already won. `quiz board` reads the `/kv/flop-quiz/board`
-note, ranks it by points, and marks the DID from `--key` (or `--did`) with
-`<- you`; `--json` emits the ranked board plus a `me` block with your rank.
+`quiz auto` answers from the built-in trivia table by default — no account, no
+key, works out of the box. For harder rounds it can ask an LLM first: point it
+at any OpenAI-compatible `/chat/completions` endpoint with your own model and
+key, via flags or the `TECHNOCORE_LLM_URL`, `TECHNOCORE_LLM_MODEL`,
+`TECHNOCORE_LLM_API_KEY`, and `TECHNOCORE_LLM_HEADERS` environment variables. No
+endpoint is bundled and no key is shipped; with none set, the LLM path is simply
+skipped. `--no-llm` forces table-only. Only the first correct answer scores, so
+`--max-guesses 1` avoids spending later guesses on a round already won.
+
+`quiz board` reads the `/kv/flop-quiz/board` note, ranks it by points, and marks
+the DID from `--key` (or `--did`) with `<- you`; `--json` emits the ranked board
+plus a `me` block with your rank.
 
 ## Security notes
 

@@ -59,10 +59,16 @@ MAX_KEY_FILE_BYTES = 64 * 1024
 MAX_MESSAGE_JSON_BYTES = 512 * 1024
 MAX_BATCH_IDENTITIES = 1000
 
-# Local 9Router gateway used as the fallback brain when the trivia table misses.
-LLM_URL = "http://localhost:20128/v1/chat/completions"
-LLM_MODEL = "jerouter/f/deepseek-v4-flash"
-LLM_API_KEY = "sk-2ac"
+# Optional LLM assist for quiz auto-answer. Off unless configured: set the URL
+# (any OpenAI-compatible /chat/completions endpoint) and a key via env or the
+# quiz-auto flags. With nothing set, quiz auto uses the built-in trivia table
+# only, so the tool works out of the box with no account and no leaked key.
+LLM_URL = os.environ.get("TECHNOCORE_LLM_URL", "")
+LLM_API_KEY = os.environ.get("TECHNOCORE_LLM_API_KEY", "")
+LLM_MODEL = os.environ.get("TECHNOCORE_LLM_MODEL", "")
+# Extra request headers as `Name: value` pairs, comma-separated (e.g. a router
+# routing tag). Optional; most OpenAI-compatible endpoints need none.
+LLM_HEADERS = os.environ.get("TECHNOCORE_LLM_HEADERS", "")
 LLM_TIMEOUT_SECONDS = 15.0
 LLM_SYSTEM_PROMPT = (
     "You answer crypto/blockchain trivia. Reply with ONLY the answer, nothing "
@@ -1179,25 +1185,45 @@ def lookup_answers(question: str) -> tuple[str, ...]:
     return best
 
 
-def llm_answer(question: str, timeout: float = LLM_TIMEOUT_SECONDS) -> str | None:
-    """Ask the local 9Router gateway for a trivia answer, or None on any failure.
+def parse_header_pairs(spec: str) -> dict[str, str]:
+    """Turn `Name: value, Other: v2` into a headers dict; tolerate blanks."""
+    headers: dict[str, str] = {}
+    for pair in spec.split(","):
+        name, sep, value = pair.partition(":")
+        if sep and name.strip():
+            headers[name.strip()] = value.strip()
+    return headers
 
-    The model emits `reasoning_content` alongside `content`; only `content`
+
+def llm_answer(
+    question: str,
+    url: str = LLM_URL,
+    api_key: str = LLM_API_KEY,
+    model: str = LLM_MODEL,
+    headers: str = LLM_HEADERS,
+    timeout: float = LLM_TIMEOUT_SECONDS,
+) -> str | None:
+    """Ask an OpenAI-compatible endpoint for a trivia answer, or None.
+
+    Disabled unless `url` and `model` are set (bring your own endpoint and key).
+    The model may emit `reasoning_content` alongside `content`; only `content`
     carries the answer. A leaked `data: [DONE]` streaming tail is trimmed.
     """
+    if not url or not model:
+        return None
     body = json.dumps({
-        "model": LLM_MODEL,
+        "model": model,
         "max_tokens": 50,
         "messages": [
             {"role": "system", "content": LLM_SYSTEM_PROMPT},
             {"role": "user", "content": question},
         ],
     }).encode("utf-8")
-    request = Request(LLM_URL, data=body, method="POST", headers={
-        "Authorization": f"Bearer {LLM_API_KEY}",
-        "X-9R-Tag": "jerouter",
-        "Content-Type": "application/json",
-    })
+    request_headers = {"Content-Type": "application/json"}
+    if api_key:
+        request_headers["Authorization"] = f"Bearer {api_key}"
+    request_headers.update(parse_header_pairs(headers))
+    request = Request(url, data=body, method="POST", headers=request_headers)
     try:
         with urlopen(request, timeout=timeout) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
@@ -1392,11 +1418,18 @@ def command_quiz_board(args: argparse.Namespace, palette: Palette) -> int:
 
 
 def command_quiz_auto(args: argparse.Namespace, palette: Palette) -> int:
-    """Watch the quiz room and answer every quiz the trivia table knows."""
+    """Watch the quiz room and answer every quiz, LLM-first when configured."""
     room = validate_name(args.room)
     private_key = load_private_key(Path(args.key))
     did = did_from_private_key(private_key)
     print(palette(f"auto-answering /r/{room} as {short_did(did)}", "bold", "cyan"))
+
+    llm_url = args.llm_url or LLM_URL
+    llm_model = args.llm_model or LLM_MODEL
+    use_llm = not args.no_llm and bool(llm_url and llm_model)
+    if not args.no_llm and not use_llm:
+        print(palette("LLM assist off (no --llm-url/--llm-model); using trivia "
+                      "table only", "dim"), flush=True)
 
     page = read_room(args.base_url, room, limit=1, timeout=args.timeout)
     cursor = int(page.get("last_seq") or 0)
@@ -1427,8 +1460,14 @@ def command_quiz_auto(args: argparse.Namespace, palette: Palette) -> int:
             answered.add(quiz["cid"])
             # LLM-first for speed (first correct answer wins points)
             candidates: tuple[str, ...] = ()
-            if not args.no_llm:
-                guess = llm_answer(quiz["question"])
+            if use_llm:
+                guess = llm_answer(
+                    quiz["question"],
+                    url=llm_url,
+                    api_key=args.llm_api_key or LLM_API_KEY,
+                    model=llm_model,
+                    headers=args.llm_header or LLM_HEADERS,
+                )
                 candidates = (guess,) if guess else ()
             if not candidates:
                 candidates = lookup_answers(quiz["question"])
@@ -1540,7 +1579,8 @@ def build_parser() -> argparse.ArgumentParser:
                             help="print the digest and message without posting")
     quiz_reply.set_defaults(handler=command_quiz_answer)
 
-    quiz_bot = quiz_modes.add_parser("auto", help="monitor and auto-answer from the trivia table")
+    quiz_bot = quiz_modes.add_parser("auto",
+                                     help="monitor and auto-answer, LLM-first when configured")
     add_room(quiz_bot)
     quiz_bot.add_argument("--key", required=True, help="path to the signing PEM key")
     quiz_bot.add_argument("--wait", type=int, default=10,
@@ -1548,7 +1588,19 @@ def build_parser() -> argparse.ArgumentParser:
     quiz_bot.add_argument("--max-guesses", type=int, default=2,
                           help="candidate answers to post per quiz (default: 2)")
     quiz_bot.add_argument("--no-llm", action="store_true",
-                          help="trivia table only; do not ask the LLM on a miss")
+                          help="trivia table only; never call an LLM")
+    quiz_bot.add_argument("--llm-url", default="",
+                          help="OpenAI-compatible /chat/completions URL "
+                               "(or $TECHNOCORE_LLM_URL); enables LLM assist")
+    quiz_bot.add_argument("--llm-model", default="",
+                          help="model name for the LLM endpoint "
+                               "(or $TECHNOCORE_LLM_MODEL)")
+    quiz_bot.add_argument("--llm-api-key", default="",
+                          help="bearer key for the LLM endpoint "
+                               "(or $TECHNOCORE_LLM_API_KEY); omit if none")
+    quiz_bot.add_argument("--llm-header", default="",
+                          help="extra headers 'Name: v, Other: v2' "
+                               "(or $TECHNOCORE_LLM_HEADERS)")
     quiz_bot.set_defaults(handler=command_quiz_auto)
 
     quiz_score = quiz_modes.add_parser("board", help="show the quiz scoreboard and our rank")

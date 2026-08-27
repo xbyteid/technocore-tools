@@ -124,6 +124,18 @@ def check_cli(record: dict[str, str]) -> None:
         assert result.returncode == 2 and "already exists" in result.stderr
 
 
+def check_llm_optional() -> None:
+    # LLM assist is off by default: no url/model means no network call, so the
+    # tool works for anyone with no account and no key.
+    assert tt.llm_answer("what is 2+2", url="", model="") is None
+    assert tt.llm_answer("q", url="https://x/y", model="") is None
+    # Header spec parses into a dict, tolerating blanks and missing colons.
+    assert tt.parse_header_pairs("X-Tag: a, Authorization: b") == {
+        "X-Tag": "a", "Authorization": "b"}
+    assert tt.parse_header_pairs(" , bogus , Z:1 ") == {"Z": "1"}
+    assert tt.parse_header_pairs("") == {}
+
+
 def check_quiz_board() -> None:
     # KV notes escape line breaks as literal backslash-n; rows must still parse
     # and rank by points regardless of the order they arrive in.
@@ -145,6 +157,7 @@ def main() -> int:
     key = check_did_roundtrip()
     record = check_payload_and_signature(key)
     check_analytics()
+    check_llm_optional()
     check_quiz_board()
     check_cli(record)
     print("selfcheck: all checks passed")
